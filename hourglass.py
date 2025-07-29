@@ -352,12 +352,12 @@ def scheduler():
                     play_video_with_caption(item["path"], item["duration"], item["type"])
                     time.sleep(max(0, item["duration"] - 2))
 
-                # ✅ Check slot timing after fitting episodes
+                # Check slot timing after fitting episodes
                 last_slot_hour = should_play_slot(datetime.now(), last_slot_hour)
                 refill_queue()
                 continue
 
-            # 🧯 Fallback to queue
+            # Fallback to queue
             print("[INFO] No fitting episode found. Using next in queue.")
             if not play_queue:
                 refill_queue()
@@ -395,7 +395,7 @@ def scheduler():
                 else:
                     print("[INFO] Slot too close after current. Skipping queued item.")
 
-            # 📺 Filler + commercial padding
+            # Filler + commercial padding
             remaining = time_until_next_slot()
             if remaining > SLOT_DURATION + COMMERCIAL_PADDING:
                 play_commercial_block(COMMERCIAL_PADDING)
