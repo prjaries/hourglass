@@ -1,5 +1,5 @@
 # hourglass
-A WIP scheduling server for CasparCG that allows for a fixed hourly time slot for certain programs.
+A WIP scheduling system for CasparCG that allows for a fixed hourly time slot for certain programming. This system is primarily built for the Project Aries IntelliSTAR source feeds that we provide to users, and acts as the primary testbed.
 
 # Requires:
 - A CasparCG server
