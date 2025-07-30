@@ -23,19 +23,15 @@ import subprocess
 from pathlib import Path
 from datetime import datetime, timedelta
 from collections import deque
+import logging, coloredlogs
 
-BASE_DIR = Path(__file__).resolve().parent
-EPISODES_FOLDER = BASE_DIR / "episodes"
-FILLER_FOLDER = BASE_DIR / "filler"
-SLOT_VIDEO = BASE_DIR / "slot_clip.ts"
-SLOT_DURATION = 65
-SLOT_MINUTE = 18
-COMMERCIAL_PADDING = 120
+
+EXEC_DIR = Path(__file__).resolve().parent
+log = logging.getLogger("Hourglass")
+log.setLevel(logging.DEBUG)
+coloredlogs.install(level="DEBUG", logger=log)
+
 PLAYER_SLEEP = 1
-CASPAR_HOST = "localhost"
-CASPAR_PORT = 5250
-SLOT_TS_FOLDER = BASE_DIR / "slot_clips_ts"
-LOG_FILE = BASE_DIR / "playout_log.json"
 VIDEO_EXTENSIONS = {".mp4", ".mkv", ".mov", ".ts", ".avi"}
 QUEUE_MAX_SIZE = 5
 
@@ -44,7 +40,7 @@ play_queue = []
 
 current_show_index = 0
 episodes_played_from_show = 0
-EPISODES_PER_SHOW = 1
+
 
 def normalize_path(path):
     try:
@@ -52,14 +48,30 @@ def normalize_path(path):
             path = Path(path)
         return str(path.resolve()).replace("\\", "/")
     except Exception as e:
-        print(f"[ERROR] Failed to normalize path: {e}")
+        log.error(f"Failed to normalize path: {e}")
         return str(path)
+
+try:
+    with open(f"{EXEC_DIR}\config.json", 'r') as conf_file:
+        conf = json.load(conf_file)
+    SLOT_MINUTE = conf["SLOT_MINUTE"]
+    SLOT_DURATION = conf["SLOT_DURATION"]
+    COMMERCIAL_PADDING = conf["COMMERCIAL_PADDING"]
+    EPISODES_FOLDER = Path(conf["EPISODES_FOLDER"])
+    FILLER_FOLDER = Path(conf["FILLER_FOLDER"])
+    SLOT_FOLDER =  Path(conf["SLOT_FOLDER"])
+    CASPAR_HOST = conf["CASPAR_HOST"]
+    CASPAR_PORT = conf["CASPAR_PORT"]
+    EPISODES_PER_SHOW = conf["EPISODES_PER_SHOW"]
+except:
+    log.error("Cant load config.")
+    exit()
 
 def get_show_folders():
     try:
         return [f for f in EPISODES_FOLDER.iterdir() if f.is_dir()]
     except Exception as e:
-        print(f"[ERROR] Failed to list show folders: {e}")
+        log.error(f"Failed to list show folders: {e}")
         return []
 show_folders = get_show_folders()
 
@@ -74,7 +86,7 @@ class CasparCGClient:
                 sock.sendall((cmd + "\r\n").encode())
                 return sock.recv(1024).decode().strip()
         except Exception as e:
-            print(f"[ERROR] Failed to send command '{cmd}': {e}")
+            log.error(f"Failed to send command '{cmd}': {e}")
             return None
 
     def play_video(self, path, channel=1, layer=10,
@@ -90,17 +102,16 @@ class CasparCGClient:
         json_data = f'{{"text":"{text}"}}'
         return self.send_command(f'CG ADD {channel}-{layer} 0 "{template}" 1 "{json_data}"')
 
-caspar = CasparCGClient()
 
 def get_random_slot_ts():
     try:
-        slot_files = sorted(SLOT_TS_FOLDER.glob("*.ts"))
+        slot_files = sorted(SLOT_FOLDER.glob("*.ts"))
         if not slot_files:
             raise FileNotFoundError("No .ts files found in slot folder.")
         return random.choice(slot_files)
     except Exception as e:
-        print(f"[ERROR] Slot TS selection failed: {e}")
-        return SLOT_VIDEO
+        log.error(f"Slot TS selection failed: {e}")
+        return get_random_filler()
 
 def time_until_next_slot():
     try:
@@ -110,7 +121,7 @@ def time_until_next_slot():
             next_slot += timedelta(hours=1)
         return max(0, (next_slot - now).total_seconds())
     except Exception as e:
-        print(f"[ERROR] Failed to calculate time until slot: {e}")
+        log.error(f"Failed to calculate time until slot: {e}")
         return SLOT_DURATION
 
 duration_cache = {}
@@ -131,25 +142,25 @@ def get_video_duration(file_path):
         duration_cache[file_path] = duration
         return duration
     except Exception as e:
-        print(f"[ERROR] Could not get duration for '{file_path}': {e}")
+        log.error(f"Could not get duration for '{file_path}': {e}")
         duration_cache[file_path] = 0
         return 0
 
         
-def play_video_with_caption(video_path, duration, label):
+def play_video(video_path, duration, label):
     try:
         ts = int(time.time())
         #caspar.overlay_caption(f"{label} - Timestamp: {ts}")
         caspar.play_video(video_path)
         time.sleep(PLAYER_SLEEP)
     except Exception as e:
-        print(f"[ERROR] Playback failed for '{video_path}': {e}")
+        log.error(f"Playback failed for '{video_path}': {e}")
 
 def get_next_random_episode():
     global current_show_index, episodes_played_from_show
 
     if not show_folders:
-        print("[WARN] No show folders found. Falling back to filler.")
+        log.warn("No show folders found. Falling back to filler.")
         return None
 
     current_show = show_folders[current_show_index]
@@ -159,7 +170,7 @@ def get_next_random_episode():
     ]
 
     if not episode_candidates:
-        print(f"[WARN] No episodes found in {current_show.name}. Rotating.")
+        log.warn(f"No episodes found in {current_show.name}. Rotating.")
         current_show_index = (current_show_index + 1) % len(show_folders)
         episodes_played_from_show = 0
         return get_next_random_episode()
@@ -207,21 +218,21 @@ def play_filler_until_slot(seconds_remaining):
         while seconds_remaining > SLOT_DURATION:
             filler = get_random_filler()
             if not filler or not filler.exists():
-                print("[WARN] No valid filler found.")
+                log.warn("No valid filler found.")
                 break
             duration = get_video_duration(filler)
             if duration <= 1 or duration >= seconds_remaining - 2:
                 continue
-            print(f"[INFO] Playing filler: {filler.name} ({duration:.1f}s)")
-            play_video_with_caption(filler, duration, "FILLER")
+            log.info(f"Playing filler: {filler.name} ({duration:.1f}s)")
+            play_video(filler, duration, "FILLER")
             recent_fillers.append(filler)
             time.sleep(duration)
             seconds_remaining -= duration
     except Exception as e:
-        print(f"[ERROR] Filler playback failed: {e}")
+        log.error(f"Filler playback failed: {e}")
 
 def play_commercial_block(duration):
-    print(f"[INFO] Playing commercial padding block (~{duration} sec)")
+    log.info(f"Playing commercial padding block (~{duration} sec)")
     play_filler_until_slot(duration)
 
 def get_fitting_episode(max_duration):
@@ -297,7 +308,7 @@ def get_fitting_episode(max_duration):
                 "duration": duration
             }]
         else:
-            print("[WARN] No fallback filler available.")
+            log.warn("No fallback filler available.")
             return None
 
     return best_pair if best_pair else best_single
@@ -313,43 +324,42 @@ def scheduler():
         if now.hour != last_hour:
             # If filler or episode ends within ±60s of slot, trigger it
             if 0 <= remaining <= 60 or -60 <= remaining <= 0:
-                print(f"[INFO] Flexible slot launch: {remaining:.2f}s offset")
+                log.info(f"Flexible slot launch: {remaining:.2f}s offset")
                 slot_clip = get_random_slot_ts()
-                play_video_with_caption(slot_clip, SLOT_DURATION, "SLOT")
+                play_video(slot_clip, SLOT_DURATION, "SLOT")
                 time.sleep(SLOT_DURATION)
                 return now.hour
         else:
-            print("[SKIP] Slot already played this hour.")
+            log.warn("Slot already played this hour.")
         return last_hour
 
     last_slot_hour = None
-    print(f"[STARTUP] Scheduler booting at {datetime.now()}")
+    log.info(f"Scheduler booting at {datetime.now()}")
 
     startup_time = time.time()
     refill_queue()
     if time.time() - startup_time > 10:
-        print("[ERROR] refill_queue took too long — potential hang.")
+        log.error("refill_queue took too long — potential hang.")
 
     while True:
         try:
             if not EPISODES_FOLDER.exists():
-                print("[WARN] Episodes folder missing. Waiting...")
+                log.warn("Episodes folder missing. Waiting...")
                 time.sleep(30)
                 continue
 
             seconds_to_slot = time_until_next_slot()
             max_episode_duration = seconds_to_slot - SLOT_DURATION - 2
 
-            # 🎯 Try fitting optimal episodes
             fitting_episodes = get_fitting_episode(max_episode_duration)
 
             if isinstance(fitting_episodes, list):
                 for item in fitting_episodes:
                     if not Path(item["path"]).exists():
-                        print(f"[WARN] Skipping missing file: {item['label']}")
+                        log.warn(f"Skipping missing file: {item['label']}")
                         continue
-                    print(f"[INFO] Playing fitting: {item['label']} ({item['duration']:.1f}s)")
-                    play_video_with_caption(item["path"], item["duration"], item["type"])
+                    log.info(f"Playing fitting: {item['label']} ({item['duration']:.1f}s)")
+                    play_video(item["path"], item["duration"], item["type"])
                     time.sleep(max(0, item["duration"] - 2))
 
                 # Check slot timing after fitting episodes
@@ -358,42 +368,42 @@ def scheduler():
                 continue
 
             # Fallback to queue
-            print("[INFO] No fitting episode found. Using next in queue.")
+            print("No fitting episode found. Using next in queue.")
             if not play_queue:
                 refill_queue()
             current_item = play_queue.pop(0) if play_queue else None
 
             if not current_item:
-                print("[WARN] No item to play. Waiting briefly...")
+                log.warn("No item to play. Waiting briefly...")
                 time.sleep(5)
                 continue
 
             if not Path(current_item["path"]).exists():
-                print("[WARN] Skipping missing file.")
+                log.warn("Skipping missing file.")
                 continue
 
             if current_item["duration"] >= seconds_to_slot - SLOT_DURATION:
-                print("[INFO] Slot too close. Playing fillers.")
+                log.info("Slot too close. Playing fillers.")
                 play_filler_until_slot(seconds_to_slot - SLOT_DURATION)
                 last_slot_hour = should_play_slot(datetime.now(), last_slot_hour)
                 refill_queue()
                 continue
 
-            print(f"[INFO] Playing queue: {current_item['label']} ({current_item['duration']:.1f}s)")
-            play_video_with_caption(current_item["path"], current_item["duration"], current_item["type"])
+            log.info(f"Playing queue: {current_item['label']} ({current_item['duration']:.1f}s)")
+            play_video(current_item["path"], current_item["duration"], current_item["type"])
             time.sleep(max(0, current_item["duration"] - 2))
 
             remaining = time_until_next_slot()
             if play_queue:
                 next_item = play_queue[0]
                 if next_item["duration"] < remaining - SLOT_DURATION:
-                    print(f"[INFO] Playing next in queue: {next_item['label']}")
-                    play_video_with_caption(next_item["path"], next_item["duration"], next_item["type"])
+                    log.info(f"Playing next in queue: {next_item['label']}")
+                    play_video(next_item["path"], next_item["duration"], next_item["type"])
                     time.sleep(next_item["duration"])
                     play_queue.pop(0)
                     refill_queue()
                 else:
-                    print("[INFO] Slot too close after current. Skipping queued item.")
+                    log.info("Slot too close after current. Skipping queued item.")
 
             # Filler + commercial padding
             remaining = time_until_next_slot()
@@ -402,21 +412,23 @@ def scheduler():
                 remaining = time_until_next_slot()
 
             if remaining > SLOT_DURATION:
-                print(f"[INFO] Playing filler until slot ({remaining:.1f}s remaining)")
+                log.info(f"Playing filler until slot ({remaining:.1f}s remaining)")
                 play_filler_until_slot(remaining - SLOT_DURATION)
                 last_slot_hour = should_play_slot(datetime.now(), last_slot_hour)
 
         except Exception as loop_error:
-            print(f"[CRITICAL] Scheduler loop exception: {loop_error}")
+            log.error(f"Scheduler loop exception: {loop_error}")
             time.sleep(10)
 
 
 if __name__ == "__main__":
-    print("Project Aries - Hourglass")
-    print("Maintained by Physics Prop")
+    log.info("Project Aries - Hourglass")
+    log.info("Maintained by Physics Prop")
+    caspar = CasparCGClient()
+    SLOT_VIDEO = get_random_slot_ts()
     try:
         scheduler()
     except KeyboardInterrupt:
-        print("\\n[EXIT] Scheduler interrupted by user.")
+        log.info("Scheduler interrupted by user.")
     except Exception as fatal_error:
-        print(f"[FATAL] Unhandled exception: {fatal_error}")
+        log.error(f"Unhandled exception: {fatal_error}")
