@@ -1,0 +1,11 @@
+{
+    "SLOT_MINUTE": 18,
+    "SLOT_DURATION": 65,
+    "COMMERCIAL_PADDING": 120,
+    "EPISODES_FOLDER":"D:\\aries-playout\\episodes",
+    "FILLER_FOLDER":"D:\\aries-playout\\filler",
+    "SLOT_FOLDER":"D:\\aries-playout\\slot_clips",  
+    "CASPAR_HOST": "localhost" ,
+    "CASPAR_PORT": 5250,
+    "EPISODES_PER_SHOW": 1
+}
