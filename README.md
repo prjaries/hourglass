@@ -8,6 +8,5 @@ A WIP scheduling system for CasparCG that allows for a fixed hourly time slot fo
 
 
 # TODO:
-- config file
 - fix scheduler bugs when starting program close to runtime of the time slot.
-- logging playback for future reference (boilerplate code is there, just needs final implementation)
+- logging playback for future reference
