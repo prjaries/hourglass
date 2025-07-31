@@ -27,7 +27,7 @@ import logging, coloredlogs
 
 
 EXEC_DIR = Path(__file__).resolve().parent
-log = logging.getLogger("Hourglass")
+log = logging.getLogger("hourglass")
 log.setLevel(logging.DEBUG)
 coloredlogs.install(level="DEBUG", logger=log)
 
@@ -51,15 +51,16 @@ def normalize_path(path):
         log.error(f"Failed to normalize path: {e}")
         return str(path)
 
+
 try:
-    with open(f"{EXEC_DIR}\config.json", 'r') as conf_file:
+    with open(f"{EXEC_DIR}\config.json", "r") as conf_file:
         conf = json.load(conf_file)
     SLOT_MINUTE = conf["SLOT_MINUTE"]
     SLOT_DURATION = conf["SLOT_DURATION"]
     COMMERCIAL_PADDING = conf["COMMERCIAL_PADDING"]
     EPISODES_FOLDER = Path(conf["EPISODES_FOLDER"])
     FILLER_FOLDER = Path(conf["FILLER_FOLDER"])
-    SLOT_FOLDER =  Path(conf["SLOT_FOLDER"])
+    SLOT_FOLDER = Path(conf["SLOT_FOLDER"])
     CASPAR_HOST = conf["CASPAR_HOST"]
     CASPAR_PORT = conf["CASPAR_PORT"]
     EPISODES_PER_SHOW = conf["EPISODES_PER_SHOW"]
@@ -67,13 +68,17 @@ except:
     log.error("Cant load config.")
     exit()
 
+
 def get_show_folders():
     try:
         return [f for f in EPISODES_FOLDER.iterdir() if f.is_dir()]
     except Exception as e:
         log.error(f"Failed to list show folders: {e}")
         return []
+
+
 show_folders = get_show_folders()
+
 
 class CasparCGClient:
     def __init__(self, host=CASPAR_HOST, port=CASPAR_PORT):
@@ -89,8 +94,9 @@ class CasparCGClient:
             log.error(f"Failed to send command '{cmd}': {e}")
             return None
 
-    def play_video(self, path, channel=1, layer=10,
-                   audio_channels=None, audio_map=None):
+    def play_video(
+        self, path, channel=1, layer=10, audio_channels=None, audio_map=None
+    ):
         cmd = f'PLAY {channel}-{layer} "{normalize_path(path)}"'
         if audio_channels:
             cmd += f" --audioChannels {audio_channels}"
@@ -100,7 +106,9 @@ class CasparCGClient:
 
     def overlay_caption(self, text, channel=1, layer=20, template="timestamp_template"):
         json_data = f'{{"text":"{text}"}}'
-        return self.send_command(f'CG ADD {channel}-{layer} 0 "{template}" 1 "{json_data}"')
+        return self.send_command(
+            f'CG ADD {channel}-{layer} 0 "{template}" 1 "{json_data}"'
+        )
 
 
 def get_random_slot_ts():
@@ -113,6 +121,7 @@ def get_random_slot_ts():
         log.error(f"Slot TS selection failed: {e}")
         return get_random_filler()
 
+
 def time_until_next_slot():
     try:
         now = datetime.now()
@@ -124,19 +133,32 @@ def time_until_next_slot():
         log.error(f"Failed to calculate time until slot: {e}")
         return SLOT_DURATION
 
+
 duration_cache = {}
 
+
 def get_video_duration(file_path):
-    #print(f"[DEBUG] Probing duration for: {file_path}")
+    # print(f"[DEBUG] Probing duration for: {file_path}")
     file_path = str(file_path)
     if file_path in duration_cache:
         return duration_cache[file_path]
 
     try:
-        result = subprocess.run([
-            "ffprobe", "-v", "error", "-show_entries",
-            "format=duration", "-of", "json", file_path
-        ], stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=5)
+        result = subprocess.run(
+            [
+                "ffprobe",
+                "-v",
+                "error",
+                "-show_entries",
+                "format=duration",
+                "-of",
+                "json",
+                file_path,
+            ],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            timeout=5,
+        )
         data = json.loads(result.stdout)
         duration = float(data["format"]["duration"])
         duration_cache[file_path] = duration
@@ -146,15 +168,16 @@ def get_video_duration(file_path):
         duration_cache[file_path] = 0
         return 0
 
-        
+
 def play_video(video_path, duration, label):
     try:
         ts = int(time.time())
-        #caspar.overlay_caption(f"{label} - Timestamp: {ts}")
+        # caspar.overlay_caption(f"{label} - Timestamp: {ts}")
         caspar.play_video(video_path)
         time.sleep(PLAYER_SLEEP)
     except Exception as e:
         log.error(f"Playback failed for '{video_path}': {e}")
+
 
 def get_next_random_episode(count=5):
     show_folders = [f for f in EPISODES_FOLDER.iterdir() if f.is_dir()]
@@ -163,8 +186,11 @@ def get_next_random_episode(count=5):
     selected = []
     for folder in show_folders:
         episode_candidates = [
-            f for f in folder.iterdir()
-            if f.is_file() and f.suffix.lower() in VIDEO_EXTENSIONS and f.name != SLOT_VIDEO.name
+            f
+            for f in folder.iterdir()
+            if f.is_file()
+            and f.suffix.lower() in VIDEO_EXTENSIONS
+            and f.name != SLOT_VIDEO.name
         ]
         if not episode_candidates:
             continue
@@ -178,8 +204,6 @@ def get_next_random_episode(count=5):
     return selected
 
 
-
-
 def refill_queue():
     while len(play_queue) < QUEUE_MAX_SIZE:
         next_clip_list = get_next_random_episode()
@@ -189,25 +213,35 @@ def refill_queue():
             duration = get_video_duration(next_clip)
             if duration <= 1:
                 continue
-            play_queue.append({
-                "path": normalize_path(next_clip),
-                "type": "EPISODE" if next_clip.parent == EPISODES_FOLDER else "FILLER",
-                "label": next_clip.name,
-                "duration": duration
-            })
+            play_queue.append(
+                {
+                    "path": normalize_path(next_clip),
+                    "type": (
+                        "EPISODE" if next_clip.parent == EPISODES_FOLDER else "FILLER"
+                    ),
+                    "label": next_clip.name,
+                    "duration": duration,
+                }
+            )
+
 
 def get_random_filler():
     fillers = [
-        f for f in FILLER_FOLDER.iterdir()
-        if f.is_file() and f.suffix.lower() in VIDEO_EXTENSIONS and f not in recent_fillers
+        f
+        for f in FILLER_FOLDER.iterdir()
+        if f.is_file()
+        and f.suffix.lower() in VIDEO_EXTENSIONS
+        and f not in recent_fillers
     ]
     if not fillers:
         recent_fillers.clear()
         fillers = [
-            f for f in FILLER_FOLDER.iterdir()
+            f
+            for f in FILLER_FOLDER.iterdir()
             if f.is_file() and f.suffix.lower() in VIDEO_EXTENSIONS
         ]
     return random.choice(fillers) if fillers else None
+
 
 def play_filler_until_slot(seconds_remaining):
     try:
@@ -227,9 +261,11 @@ def play_filler_until_slot(seconds_remaining):
     except Exception as e:
         log.error(f"Filler playback failed: {e}")
 
+
 def play_commercial_block(duration):
     log.info(f"Playing commercial padding block (~{duration} sec)")
     play_filler_until_slot(duration)
+
 
 def get_fitting_episode(max_duration):
     show_dirs = [d for d in EPISODES_FOLDER.iterdir() if d.is_dir()]
@@ -241,8 +277,11 @@ def get_fitting_episode(max_duration):
     # Try to find best single episode
     for show in show_dirs:
         episodes = [
-            f for f in show.iterdir()
-            if f.is_file() and f.suffix.lower() in VIDEO_EXTENSIONS and f.name != SLOT_VIDEO.name
+            f
+            for f in show.iterdir()
+            if f.is_file()
+            and f.suffix.lower() in VIDEO_EXTENSIONS
+            and f.name != SLOT_VIDEO.name
         ]
         random.shuffle(episodes)
         for ep in episodes:
@@ -250,18 +289,24 @@ def get_fitting_episode(max_duration):
             if 1 < duration <= max_duration:
                 gap = max_duration - duration
                 if gap < smallest_gap:
-                    best_single = [{
-                        "path": normalize_path(ep),
-                        "type": "EPISODE",
-                        "label": f"{show.name} - {ep.name}",
-                        "duration": duration
-                    }]
+                    best_single = [
+                        {
+                            "path": normalize_path(ep),
+                            "type": "EPISODE",
+                            "label": f"{show.name} - {ep.name}",
+                            "duration": duration,
+                        }
+                    ]
                     smallest_gap = gap
 
     # Try to find best pair of episodes
     all_eps = [
-        f for d in show_dirs for f in d.iterdir()
-        if f.is_file() and f.suffix.lower() in VIDEO_EXTENSIONS and f.name != SLOT_VIDEO.name
+        f
+        for d in show_dirs
+        for f in d.iterdir()
+        if f.is_file()
+        and f.suffix.lower() in VIDEO_EXTENSIONS
+        and f.name != SLOT_VIDEO.name
     ]
     random.shuffle(all_eps)
 
@@ -281,14 +326,14 @@ def get_fitting_episode(max_duration):
                             "path": normalize_path(all_eps[i]),
                             "type": "EPISODE",
                             "label": all_eps[i].name,
-                            "duration": d1
+                            "duration": d1,
                         },
                         {
                             "path": normalize_path(all_eps[j]),
                             "type": "EPISODE",
                             "label": all_eps[j].name,
-                            "duration": d2
-                        }
+                            "duration": d2,
+                        },
                     ]
                     smallest_pair_gap = gap
 
@@ -297,17 +342,20 @@ def get_fitting_episode(max_duration):
         filler = get_random_filler()
         if filler and filler.exists():
             duration = get_video_duration(filler)
-            return [{
-                "path": normalize_path(filler),
-                "type": "FILLER",
-                "label": f"FALLBACK - {filler.name}",
-                "duration": duration
-            }]
+            return [
+                {
+                    "path": normalize_path(filler),
+                    "type": "FILLER",
+                    "label": f"FALLBACK - {filler.name}",
+                    "duration": duration,
+                }
+            ]
         else:
             log.warn("No fallback filler available.")
             return None
 
     return best_pair if best_pair else best_single
+
 
 def scheduler():
     def is_slot_time(now, last_hour):
@@ -366,7 +414,9 @@ def scheduler():
             fitting_episodes = None
             seconds_to_slot = time_until_next_slot()
 
-            if seconds_to_slot <= 600:  # Only try fitting episodes within 10 minutes of slot
+            if (
+                seconds_to_slot <= 600
+            ):  # Only try fitting episodes within 10 minutes of slot
                 max_episode_duration = seconds_to_slot - SLOT_DURATION - 2
                 fitting_episodes = get_fitting_episode(max_episode_duration)
 
@@ -384,7 +434,6 @@ def scheduler():
                     last_slot_hour = execute_slot(datetime.now())
                 refill_queue()
                 continue
-
 
             if is_slot_time(now, last_slot_hour):
                 last_slot_hour = execute_slot(now)
@@ -412,11 +461,16 @@ def scheduler():
                 continue
 
             log.info(f"Playing queued item: {current_item['label']}")
-            play_video(current_item["path"], current_item["duration"], current_item["type"])
+            play_video(
+                current_item["path"], current_item["duration"], current_item["type"]
+            )
             time.sleep(max(0, current_item["duration"] - 2))
 
             seconds_to_slot = time_until_next_slot()
-            if play_queue and play_queue[0]["duration"] < seconds_to_slot - SLOT_DURATION:
+            if (
+                play_queue
+                and play_queue[0]["duration"] < seconds_to_slot - SLOT_DURATION
+            ):
                 next_item = play_queue.pop(0)
                 log.info(f"Playing next in queue: {next_item['label']}")
                 play_video(next_item["path"], next_item["duration"], next_item["type"])
@@ -438,7 +492,6 @@ def scheduler():
         except Exception as loop_error:
             log.error(f"Scheduler loop exception: {loop_error}")
             time.sleep(10)
-
 
 
 if __name__ == "__main__":
