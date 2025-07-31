@@ -156,49 +156,45 @@ def play_video(video_path, duration, label):
     except Exception as e:
         log.error(f"Playback failed for '{video_path}': {e}")
 
-def get_next_random_episode():
-    global current_show_index, episodes_played_from_show
+def get_next_random_episode(count=5):
+    show_folders = [f for f in EPISODES_FOLDER.iterdir() if f.is_dir()]
+    random.shuffle(show_folders)
 
-    if not show_folders:
-        log.warn("No show folders found. Falling back to filler.")
-        return None
+    selected = []
+    for folder in show_folders:
+        episode_candidates = [
+            f for f in folder.iterdir()
+            if f.is_file() and f.suffix.lower() in VIDEO_EXTENSIONS and f.name != SLOT_VIDEO.name
+        ]
+        if not episode_candidates:
+            continue
+        episode = random.choice(episode_candidates)
+        log.info(f"Adding {episode} to the queue")
+        selected.append(Path(episode))
+        if len(selected) >= count:
+            break
 
-    current_show = show_folders[current_show_index]
-    episode_candidates = [
-        f for f in current_show.iterdir()
-        if f.is_file() and f.suffix.lower() in VIDEO_EXTENSIONS and f.name != SLOT_VIDEO.name
-    ]
-
-    if not episode_candidates:
-        log.warn(f"No episodes found in {current_show.name}. Rotating.")
-        current_show_index = (current_show_index + 1) % len(show_folders)
-        episodes_played_from_show = 0
-        return get_next_random_episode()
-
-    selected = random.choice(episode_candidates)
-    episodes_played_from_show += 1
-
-    if episodes_played_from_show >= EPISODES_PER_SHOW:
-        current_show_index = (current_show_index + 1) % len(show_folders)
-        episodes_played_from_show = 0
-
+    log.info(f"Queue filled.")
     return selected
+
+
 
 
 def refill_queue():
     while len(play_queue) < QUEUE_MAX_SIZE:
-        next_clip = get_next_random_episode()
-        if not next_clip or not next_clip.exists():
-            continue
-        duration = get_video_duration(next_clip)
-        if duration <= 1:
-            continue
-        play_queue.append({
-            "path": normalize_path(next_clip),
-            "type": "EPISODE" if next_clip.parent == EPISODES_FOLDER else "FILLER",
-            "label": next_clip.name,
-            "duration": duration
-        })
+        next_clip_list = get_next_random_episode()
+        for next_clip in next_clip_list:
+            if not next_clip or not next_clip.exists():
+                continue
+            duration = get_video_duration(next_clip)
+            if duration <= 1:
+                continue
+            play_queue.append({
+                "path": normalize_path(next_clip),
+                "type": "EPISODE" if next_clip.parent == EPISODES_FOLDER else "FILLER",
+                "label": next_clip.name,
+                "duration": duration
+            })
 
 def get_random_filler():
     fillers = [
@@ -313,25 +309,39 @@ def get_fitting_episode(max_duration):
 
     return best_pair if best_pair else best_single
 
-
 def scheduler():
-    def should_play_slot(now, last_hour):
+    def is_slot_time(now, last_hour):
         remaining = time_until_next_slot()
-        early_window = remaining + 60
-        late_window = remaining - 60
+        return (now.hour != last_hour) and abs(remaining) <= 60
 
-        # Check if slot hasn't played this hour
-        if now.hour != last_hour:
-            # If filler or episode ends within ±60s of slot, trigger it
-            if 0 <= remaining <= 60 or -60 <= remaining <= 0:
-                log.info(f"Flexible slot launch: {remaining:.2f}s offset")
-                slot_clip = get_random_slot_ts()
-                play_video(slot_clip, SLOT_DURATION, "SLOT")
-                time.sleep(SLOT_DURATION)
-                return now.hour
-        else:
-            log.warn("Slot already played this hour.")
-        return last_hour
+    def execute_slot(now):
+        log.info("Launching slot content")
+        slot_clip = get_random_slot_ts()
+        play_video(slot_clip, SLOT_DURATION, "SLOT")
+        time.sleep(SLOT_DURATION)
+        return now.hour
+
+    def play_fallback_stack(seconds_to_slot):
+        stack = get_random_episodes(count=5)
+        for item in stack:
+            if not Path(item["path"]).exists():
+                log.warn(f"Skipping missing fallback: {item['label']}")
+                continue
+
+            if item["duration"] < seconds_to_slot - SLOT_DURATION:
+                log.info(f"Fallback play: {item['label']} ({item['duration']:.1f}s)")
+                play_video(item["path"], item["duration"], item["type"])
+                time.sleep(item["duration"])
+                seconds_to_slot = time_until_next_slot()
+
+                if seconds_to_slot > SLOT_DURATION + COMMERCIAL_PADDING:
+                    log.info(f"Padding with commercials: {COMMERCIAL_PADDING}s")
+                    play_commercial_block(COMMERCIAL_PADDING)
+                    seconds_to_slot = time_until_next_slot()
+            else:
+                log.info("Slot too close — switching to filler")
+                play_filler_until_slot(seconds_to_slot - SLOT_DURATION)
+                break
 
     last_slot_hour = None
     log.info(f"Scheduler booting at {datetime.now()}")
@@ -339,10 +349,12 @@ def scheduler():
     startup_time = time.time()
     refill_queue()
     if time.time() - startup_time > 10:
-        log.error("refill_queue took too long — potential hang.")
+        log.error("refill_queue took too long — possible hang")
 
     while True:
         try:
+            now = datetime.now()
+
             if not EPISODES_FOLDER.exists():
                 log.warn("Episodes folder missing. Waiting...")
                 time.sleep(30)
@@ -351,74 +363,82 @@ def scheduler():
             seconds_to_slot = time_until_next_slot()
             max_episode_duration = seconds_to_slot - SLOT_DURATION - 2
 
-            fitting_episodes = get_fitting_episode(max_episode_duration)
+            fitting_episodes = None
+            seconds_to_slot = time_until_next_slot()
 
-            if isinstance(fitting_episodes, list):
-                for item in fitting_episodes:
-                    if not Path(item["path"]).exists():
-                        log.warn(f"Skipping missing file: {item['label']}")
+            if seconds_to_slot <= 600:  # Only try fitting episodes within 10 minutes of slot
+                max_episode_duration = seconds_to_slot - SLOT_DURATION - 2
+                fitting_episodes = get_fitting_episode(max_episode_duration)
+
+            if fitting_episodes:
+                for ep in fitting_episodes:
+                    if not Path(ep["path"]).exists():
+                        log.warn(f"Skipping missing file: {ep['label']}")
                         continue
-                    log.info(f"Playing fitting: {item['label']} ({item['duration']:.1f}s)")
-                    play_video(item["path"], item["duration"], item["type"])
-                    time.sleep(max(0, item["duration"] - 2))
 
-                # Check slot timing after fitting episodes
-                last_slot_hour = should_play_slot(datetime.now(), last_slot_hour)
+                    log.info(f"Playing fitting: {ep['label']} ({ep['duration']:.1f}s)")
+                    play_video(ep["path"], ep["duration"], ep["type"])
+                    time.sleep(max(0, ep["duration"] - 2))
+
+                if is_slot_time(datetime.now(), last_slot_hour):
+                    last_slot_hour = execute_slot(datetime.now())
                 refill_queue()
                 continue
 
-            # Fallback to queue
-            print("No fitting episode found. Using next in queue.")
+
+            if is_slot_time(now, last_slot_hour):
+                last_slot_hour = execute_slot(now)
+                refill_queue()
+                continue
+
             if not play_queue:
                 refill_queue()
-            current_item = play_queue.pop(0) if play_queue else None
 
+            current_item = play_queue.pop(0) if play_queue else None
             if not current_item:
-                log.warn("No item to play. Waiting briefly...")
+                log.warn("No item in queue. Waiting briefly...")
                 time.sleep(5)
                 continue
 
             if not Path(current_item["path"]).exists():
-                log.warn("Skipping missing file.")
+                log.warn("Skipping missing queued item")
                 continue
 
             if current_item["duration"] >= seconds_to_slot - SLOT_DURATION:
-                log.info("Slot too close. Playing fillers.")
+                log.info("Item too close to slot. Playing filler.")
                 play_filler_until_slot(seconds_to_slot - SLOT_DURATION)
-                last_slot_hour = should_play_slot(datetime.now(), last_slot_hour)
+                last_slot_hour = execute_slot(datetime.now())
                 refill_queue()
                 continue
 
-            log.info(f"Playing queue: {current_item['label']} ({current_item['duration']:.1f}s)")
+            log.info(f"Playing queued item: {current_item['label']}")
             play_video(current_item["path"], current_item["duration"], current_item["type"])
             time.sleep(max(0, current_item["duration"] - 2))
 
-            remaining = time_until_next_slot()
-            if play_queue:
-                next_item = play_queue[0]
-                if next_item["duration"] < remaining - SLOT_DURATION:
-                    log.info(f"Playing next in queue: {next_item['label']}")
-                    play_video(next_item["path"], next_item["duration"], next_item["type"])
-                    time.sleep(next_item["duration"])
-                    play_queue.pop(0)
-                    refill_queue()
-                else:
-                    log.info("Slot too close after current. Skipping queued item.")
+            seconds_to_slot = time_until_next_slot()
+            if play_queue and play_queue[0]["duration"] < seconds_to_slot - SLOT_DURATION:
+                next_item = play_queue.pop(0)
+                log.info(f"Playing next in queue: {next_item['label']}")
+                play_video(next_item["path"], next_item["duration"], next_item["type"])
+                time.sleep(next_item["duration"])
+                refill_queue()
+            else:
+                log.info("Slot too close. Holding next queued item.")
 
-            # Filler + commercial padding
-            remaining = time_until_next_slot()
-            if remaining > SLOT_DURATION + COMMERCIAL_PADDING:
+            seconds_to_slot = time_until_next_slot()
+            if seconds_to_slot > SLOT_DURATION + COMMERCIAL_PADDING:
                 play_commercial_block(COMMERCIAL_PADDING)
-                remaining = time_until_next_slot()
+                seconds_to_slot = time_until_next_slot()
 
-            if remaining > SLOT_DURATION:
-                log.info(f"Playing filler until slot ({remaining:.1f}s remaining)")
-                play_filler_until_slot(remaining - SLOT_DURATION)
-                last_slot_hour = should_play_slot(datetime.now(), last_slot_hour)
+            if seconds_to_slot > SLOT_DURATION:
+                log.info(f"Playing filler until slot ({seconds_to_slot:.1f}s left)")
+                play_filler_until_slot(seconds_to_slot - SLOT_DURATION)
+                last_slot_hour = execute_slot(datetime.now())
 
         except Exception as loop_error:
             log.error(f"Scheduler loop exception: {loop_error}")
             time.sleep(10)
+
 
 
 if __name__ == "__main__":
